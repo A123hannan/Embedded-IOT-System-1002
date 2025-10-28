@@ -4,64 +4,103 @@
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-#define OLED_RESET    -1
+#define OLED_RESET -1
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
-#define BUTTON_PIN 25
-#define LED_PIN    18
-#define BUZZER_PIN 15
+// --- Pin Definitions ---
+#define BTN_PIN   25
+#define LED_PIN   18
+#define BUZZER    19
 
+// --- LED PWM Setup (ESP32) ---
+#define CH_LED    0
+#define PWM_FREQ  5000
+#define PWM_RES   8   // 8-bit (0–255)
+
+// --- Debounce and Press Detection ---
+bool lastButtonState = HIGH;
+bool buttonPressed = false;
+unsigned long pressStartTime = 0;
+unsigned long lastDebounceTime = 0;
+const unsigned long DEBOUNCE_MS = 30;
 const unsigned long LONG_PRESS_MS = 1500;
-const unsigned long DEBOUNCE_MS = 50;
 
-int lastButtonState = HIGH;
-int stableState = HIGH;
-unsigned long lastDebounce = 0;
-unsigned long pressStart = 0;
+// --- LED & Buzzer states ---
+bool ledState = false;
+bool buzzerOn = false;
+unsigned long buzzerStartTime = 0;
+const unsigned long BUZZER_DURATION = 200;
 
 void setup() {
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  pinMode(BUZZER, OUTPUT);
+  digitalWrite(BUZZER, LOW);
 
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) for(;;);
+  // Setup LED PWM
+  ledcSetup(CH_LED, PWM_FREQ, PWM_RES);
+  ledcAttachPin(LED_PIN, CH_LED);
+  ledcWrite(CH_LED, 0);
+
+  // Setup OLED
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    for (;;);
+  }
   display.clearDisplay();
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
-
-  digitalWrite(LED_PIN, LOW);
-  digitalWrite(BUZZER_PIN, LOW);
+  display.setCursor(0, 20);
+  display.println("Ready");
+  display.display();
 }
 
 void loop() {
   unsigned long currentMillis = millis();
-  int reading = digitalRead(BUTTON_PIN);
+  bool reading = digitalRead(BTN_PIN);
 
-  // Debounce
-  if (reading != lastButtonState) lastDebounce = currentMillis;
-  if (currentMillis - lastDebounce >= DEBOUNCE_MS) {
-    if (stableState != reading) {
-      stableState = reading;
+  // Debounce button
+  if (reading != lastButtonState) {
+    lastDebounceTime = currentMillis;
+    lastButtonState = reading;
+  }
 
-      if (reading == LOW) pressStart = currentMillis;  // button pressed
-      else {  // button released
-        unsigned long pressDuration = currentMillis - pressStart;
+  if ((currentMillis - lastDebounceTime) > DEBOUNCE_MS) {
+    // Button pressed
+    if (!buttonPressed && reading == LOW) {
+      buttonPressed = true;
+      pressStartTime = currentMillis;
+    }
+
+    // Button released
+    if (buttonPressed && reading == HIGH) {
+      unsigned long pressDuration = currentMillis - pressStartTime;
+      buttonPressed = false;
+
+      if (pressDuration >= LONG_PRESS_MS) {
+        // --- Long Press ---
+        digitalWrite(BUZZER, HIGH);
+        buzzerOn = true;
+        buzzerStartTime = currentMillis;
+
         display.clearDisplay();
-        display.setCursor(0,20);
+        display.setCursor(0, 20);
+        display.println("Long Press");
+        display.display();
+      } else {
+        // --- Short Press ---
+        ledState = !ledState;
+        ledcWrite(CH_LED, ledState ? 255 : 0);
 
-        if (pressDuration < LONG_PRESS_MS) {
-          // Short press → toggle LED
-          digitalWrite(LED_PIN, !digitalRead(LED_PIN));
-          display.println("Short Press");
-        } else {
-          // Long press → buzzer
-          tone(BUZZER_PIN, 1000, 500);
-          display.println("Long Press");
-        }
+        display.clearDisplay();
+        display.setCursor(0, 20);
+        display.println(ledState ? "LED ON" : "LED OFF");
         display.display();
       }
     }
   }
 
-  lastButtonState = reading;
+  // Turn off buzzer after duration
+  if (buzzerOn && (currentMillis - buzzerStartTime >= BUZZER_DURATION)) {
+    digitalWrite(BUZZER, LOW);
+    buzzerOn = false;
+  }
 }
